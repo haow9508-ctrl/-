@@ -1,12 +1,16 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Book, Concept, Chapter, Message, UserProgress, CognitiveStage, STAGE_ORDER, getNextStage, COGNITIVE_STAGES } from '@/types/book';
+import { Book, Concept, Chapter, Message, MessageCard, UserProgress, CognitiveStage, STAGE_ORDER, getNextStage, COGNITIVE_STAGES } from '@/types/book';
 import { bookData } from '@/data/bookData';
 import { SocraticEngine, CollisionEngine } from '@/utils/socraticEngine';
-import { getStoredProgress, saveProgress, getLearningStats, recordReview, calculateNextReview } from '@/utils/storage';
+import { getStoredProgress, saveProgress, getLearningStats, recordReview, calculateNextReview, recordSession, recordActivity, getActivityData, getConceptsNeedingReview } from '@/utils/storage';
+import { routeAgentInput, buildHomeOpening, RouteResult, AgentCardRef } from '@/utils/agentHome';
 import { AIService, StreamingChunk } from '@/utils/aiService';
 import { recordConversation, buildMemoryAwareSystemPrompt, migrateOpenClawMemory } from '@/utils/memory';
 import SettingsPanel, { loadAIConfig } from '@/components/SettingsPanel';
 import CognitiveVisualization from '@/components/CognitiveVisualization';
+import HomeView, { HomeExchange } from '@/components/HomeView';
+import { LearnCard } from '@/components/AgentCards';
+import { AI_PROVIDERS } from '@/utils/aiService';
 import {
   BookOpen, Brain, Lock, Unlock, ChevronRight, ChevronDown, Sparkles,
   RotateCcw, Trophy, MessageCircle, Lightbulb, Clock, Flame, Zap,
@@ -19,6 +23,10 @@ import {
 type LearningMode = 'socratic' | 'collision';
 type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
 type RightPanelView = 'dashboard' | 'knowledge-graph' | 'cognitive';
+type AppView = 'home' | 'chat';
+
+const LOCAL_CHAT_REPLY = `我是《思考，快与慢》的学习伙伴，不是通用聊天助手。我能做三件事：\n\n① 用提问带你走完一个概念（比如输入「什么是系统1」）\n② 掌握概念后和你进行思维碰撞、辩论\n③ 按艾宾浩斯遗忘曲线安排复习\n\n想从哪个开始？`;
+const LOCAL_FREE_REPLY = `好问题——但比起我直接给你答案，不如先检验你已有的理解。\n\n先说说你自己的看法？或者输入一个概念名（比如「锚定效应」），我们从源头开始推。`;
 
 const COLLISION_STORAGE_KEY = 'cogniread_collision_messages';
 const SOCRATIC_STORAGE_KEY = 'cogniread_socratic_messages';
@@ -59,20 +67,6 @@ const difficultyLabels: Record<DifficultyLevel, { label: string; color: string; 
   expert: { label: '专家', color: 'text-rose-600', bgColor: 'bg-rose-100' },
 };
 const difficulties: DifficultyLevel[] = ['beginner', 'intermediate', 'advanced', 'expert'];
-
-function generateHeatmapData(): number[] {
-  const data: number[] = [];
-  const stats = getLearningStats();
-  const seed = stats.totalSessions * 7;
-  for (let i = 0; i < 84; i++) {
-    const d = 84 - i;
-    if (d <= 1 && seed > 0) data.push(Math.min(seed, 5));
-    else if (d <= 3 && seed > 2) data.push(Math.floor(Math.random() * 3) + 1);
-    else if (d <= 7 && seed > 4) data.push(Math.random() > 0.4 ? Math.floor(Math.random() * 4) + 1 : 0);
-    else data.push(Math.random() > 0.65 ? Math.floor(Math.random() * 3) : 0);
-  }
-  return data;
-}
 const heatmapColors = ['bg-transparent', 'bg-emerald-200 dark:bg-emerald-900/40', 'bg-emerald-300 dark:bg-emerald-700/60', 'bg-emerald-500 dark:bg-emerald-500/70', 'bg-emerald-600 dark:bg-emerald-400', 'bg-emerald-700 dark:bg-emerald-300'];
 
 function App() {
@@ -104,8 +98,15 @@ function App() {
   const [aiConfig, setAiConfig] = useState(() => loadAIConfig());
   const [aiEnabled, setAiEnabled] = useState(() => !!(loadAIConfig().apiKey || loadAIConfig().provider === 'ollama'));
   const [streamingText, setStreamingText] = useState('');
+  // Agent 视图状态
+  const [view, setView] = useState<AppView>('home');
+  const [homeMessages, setHomeMessages] = useState<HomeExchange[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const aiServiceRef = useRef<AIService | null>(null);
+  // Agent 流转控制：首页发起的对话切换概念时，跳过概念切换 effect 的消息重建
+  const suppressConceptReloadRef = useRef(false);
+  // 复习会话：记录由复习卡打开的概念，首次答对后写入复习记录
+  const reviewSessionRef = useRef<string | null>(null);
 
   useEffect(() => { document.documentElement.classList.toggle('dark', isDark); localStorage.setItem(THEME_KEY, isDark ? 'dark' : 'light'); }, [isDark]);
   useEffect(() => { localStorage.setItem(DIFFICULTY_KEY, difficulty); }, [difficulty]);
@@ -143,7 +144,7 @@ function App() {
         }
       }
     }));
-    setProgress(initProgress); saveProgress(initProgress); setLearningStats(getLearningStats());
+    setProgress(initProgress); saveProgress(initProgress); recordSession(); setLearningStats(getLearningStats());
   }, []);
 
   useEffect(() => { saveCollisionMessagesMap(collisionMessagesMap); }, [collisionMessagesMap]);
@@ -177,15 +178,20 @@ function App() {
     prevCidRef.current = cid;
   }, [messages, learningMode, selectedConcept?.id]);
 
+  // 章节解锁：只在「锁定→解锁」状态真正变化时播放动画，避免老用户每次打开都看到解锁动画
+  const knownUnlockedRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (Object.keys(progress).length === 0) return;
-    book.chapters.forEach(ch => {
-      if (chapterIndex(ch) === 0) return;
-      if (canUnlockChapter(ch)) {
-        const fc = ch.concepts[0];
-        if (fc) { const r = fc.unlockingCriteria.requiredConcepts; if (r.every(id => progress[id]?.status === 'mastered') && r.length > 0) unlockChapter(ch.id); }
-      }
+    const unlockedNow = new Set(book.chapters.filter(canUnlockChapter).map(ch => ch.id));
+    if (knownUnlockedRef.current === null) {
+      // 首次执行：只记录基线，不播动画
+      knownUnlockedRef.current = unlockedNow;
+      return;
+    }
+    unlockedNow.forEach(id => {
+      if (!knownUnlockedRef.current!.has(id)) unlockChapter(id);
     });
+    knownUnlockedRef.current = unlockedNow;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progress]);
 
@@ -227,10 +233,17 @@ function App() {
     const cid = selectedConcept.id;
     const conceptProgress = progress[cid];
     const stage = conceptProgress?.cognitiveStage || 'understand';
-    const newEngine = new SocraticEngine(selectedConcept.questions, selectedConcept.unlockingCriteria.minCorrectAnswers, selectedConcept, stage);
+    // 传入引擎快照，保证「恢复的对话记录」与「引擎内部进度（题号/答对数/阶段计数）」一致
+    const newEngine = new SocraticEngine(selectedConcept.questions, selectedConcept.unlockingCriteria.minCorrectAnswers, selectedConcept, stage, conceptProgress?.socraticEngineState);
     setEngine(newEngine);
     setCollisionEngine(new CollisionEngine(selectedConcept));
     setLearningMode('socratic');
+
+    // 首页 Agent 发起的对话：消息已由 openAgentConversation 准备好，这里只重建引擎
+    if (suppressConceptReloadRef.current) {
+      suppressConceptReloadRef.current = false;
+      return;
+    }
 
     // 切换概念时，恢复对应概念的已保存对话
     const saved = socraticMapRef.current[cid];
@@ -256,42 +269,58 @@ function App() {
     }
   }, [selectedConcept]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingText]);
 
   /**
    * AI 流式对话 — 核心方法
-   * 当 AI 已配置时调用真实 API（System Prompt + 记忆注入），否则回退到本地引擎
+   * 当 AI 已配置时调用真实 API（System Prompt + 记忆注入），否则回退到本地引擎。
+   * opts 供 Agent 首页发起的对话使用：显式指定概念与消息基线，避免闭包读到旧状态。
    */
-  const sendAIMessage = useCallback(async (userInput: string, mode: LearningMode) => {
-    if (!userInput.trim() || !selectedConcept) return;
+  const sendAIMessage = useCallback(async (
+    userInput: string,
+    mode: LearningMode,
+    opts?: { concept?: Concept; chapter?: Chapter; baseMessages?: Message[] }
+  ) => {
+    const concept = opts?.concept ?? selectedConcept;
+    const chapter = opts?.chapter ?? selectedChapter;
+    if (!userInput.trim() || !concept) return;
     // 检查是否可用 AI
     const canUseAI = aiEnabled && (aiConfig.apiKey || aiConfig.provider === 'ollama');
     if (!canUseAI) {
-      if (mode === 'socratic') handleLocalSocratic(userInput);
-      else handleLocalCollision(userInput);
+      if (!opts) {
+        if (mode === 'socratic') handleLocalSocratic(userInput);
+        else handleLocalCollision(userInput);
+      }
       return;
     }
 
     // === 真实 AI 模式 ===
+    const base = opts?.baseMessages ?? messages;
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: userInput, timestamp: new Date() };
-    setMessages(p => [...p, userMsg]);
+    if (opts) setMessages([...base, userMsg]);
+    else setMessages(p => [...p, userMsg]);
     setInputValue('');
     setIsTyping(true);
     setShowThinking(true);
     setStreamingText('');
 
-    recordConversation(selectedConcept.id);
+    recordConversation(concept.id);
+    recordActivity(1);
 
-    const historyMessages = messages
-      .filter(m => !['welcome', 'cw', 'sw', 'r'].includes(m.id))
-      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    // 注意：messages 是闭包里的旧值（尚未包含本次输入），必须显式追加当前用户消息，否则 AI 收不到刚说的话
+    const historyMessages = [
+      ...base
+        .filter(m => !['welcome', 'cw', 'sw', 'r'].includes(m.id))
+        .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      { role: 'user' as const, content: userInput },
+    ];
 
-    const conceptContext = `当前学习概念「${selectedConcept.name}」，属于章节「${selectedChapter?.name}」。
-概念描述：${selectedConcept.description}
-${selectedConcept.quotes.length > 0 ? `书中原文引用：${selectedConcept.quotes.join('\n')}` : ''}
-${mode === 'collision' && selectedConcept.collisionTopics?.length > 0 ? `碰撞话题：${selectedConcept.collisionTopics.map(t => t.title).join(', ')}` : ''}
+    const conceptContext = `当前学习概念「${concept.name}」，属于章节「${chapter?.name}」。
+概念描述：${concept.description}
+${concept.quotes.length > 0 ? `书中原文引用：${concept.quotes.join('\n')}` : ''}
+${mode === 'collision' && concept.collisionTopics?.length > 0 ? `碰撞话题：${concept.collisionTopics.map(t => t.title).join(', ')}` : ''}
 难度级别：${difficultyLabels[difficulty].label} (${difficulty})
-${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经掌握了这个概念，可以深入探讨。' : ''}`;
+${progress[concept.id]?.status === 'mastered' ? '注意：用户已经掌握了这个概念，可以深入探讨。' : ''}`;
 
     aiServiceRef.current = new AIService(aiConfig);
 
@@ -302,11 +331,11 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
 
       for await (const chunk of aiServiceRef.current.streamChat(historyMessages, {
         currentConcept: conceptContext,
-        currentChapter: selectedChapter?.name,
+        currentChapter: chapter?.name,
         userProgress: progress as unknown as Record<string, any>,
         learningMode: mode,
         difficulty,
-        cognitiveStage: progress[selectedConcept.id]?.cognitiveStage || 'understand',
+        cognitiveStage: progress[concept.id]?.cognitiveStage || 'understand',
       })) {
         if (chunk.type === 'content') {
           fullContent += chunk.content;
@@ -351,6 +380,18 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
     if (result.quote) res.push({ id: (Date.now() + 1).toString(), role: 'assistant', content: result.quote, timestamp: new Date(), isQuote: true });
     res.push({ id: (Date.now() + 2).toString(), role: 'assistant', content: result.feedback, timestamp: new Date(), isEncouragement: result.isEncouragement, isGuidance: result.isGuidance });
 
+    // 持久化引擎快照，下次进入同一概念时可恢复到当前题目
+    const snap = engine.getSnapshot();
+
+    // 复习会话：首次答对即写入间隔重复记录
+    if (result.isCorrect && reviewSessionRef.current === selectedConcept.id) {
+      reviewSessionRef.current = null;
+      const reviewed = recordReview(selectedConcept.id);
+      if (reviewed?.nextReviewAt) {
+        res.push({ id: (Date.now() + 4).toString(), role: 'assistant', timestamp: new Date(), content: `✅ 复习已记录。下次复习安排在 ${new Date(reviewed.nextReviewAt).toLocaleDateString('zh-CN')}。` });
+      }
+    }
+
     // 阶段推进时更新进度
     if (result.stageAdvanced && result.newStage) {
       const cp = progress[selectedConcept.id];
@@ -359,7 +400,14 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
           ...cp,
           cognitiveStage: result.newStage,
           stageCompletedAt: { ...cp.stageCompletedAt, [STAGE_ORDER[STAGE_ORDER.indexOf(result.newStage) - 1]]: new Date().toISOString() },
+          socraticEngineState: snap,
         }};
+        setProgress(newProgress); saveProgress(newProgress);
+      }
+    } else if (!result.isMastered) {
+      const cp = progress[selectedConcept.id];
+      if (cp && cp.status !== 'mastered') {
+        const newProgress: Record<string, UserProgress> = { ...progress, [selectedConcept.id]: { ...cp, socraticEngineState: snap } };
         setProgress(newProgress); saveProgress(newProgress);
       }
     }
@@ -404,11 +452,12 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
   /** 本地思维碰撞回退 */
   const handleLocalCollision = (userInput: string) => {
     if (!collisionEngine || !selectedConcept) return;
-    const um: Message = { id: Date.now().toString(), role: 'user', content: inputValue, timestamp: new Date() };
+    // 使用入参而非闭包里的 inputValue：AI 出错回退时 inputValue 可能已被清空
+    const um: Message = { id: Date.now().toString(), role: 'user', content: userInput, timestamp: new Date() };
     setMessages(p => [...p, um]); const cid = selectedConcept.id;
     setCollisionMessagesMap(p => ({ ...p, [cid]: [...(p[cid] || []), um] })); setInputValue(''); setIsTyping(true); setShowThinking(true);
     setTimeout(() => setShowThinking(false), 800);
-    const r = collisionEngine.generateResponse(inputValue);
+    const r = collisionEngine.generateResponse(userInput);
     setTimeout(() => {
       const am: Message = { id: (Date.now() + 1).toString(), role: 'assistant', content: r.content, timestamp: new Date(), isQuote: r.isQuote };
       setMessages(p => [...p, am]); setCollisionMessagesMap(p => ({ ...p, [cid]: [...(p[cid] || []), am] })); setIsTyping(false);
@@ -482,9 +531,141 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
   };
 
   const getConceptStatus = (id: string) => progress[id]?.status || 'locked';
+
+  // ============ Agent 首页逻辑 ============
+
+  const homeOpening = useMemo(() => buildHomeOpening(progress, book), [progress]);
+  const canUseAI = aiEnabled && (aiConfig.apiKey || aiConfig.provider === 'ollama');
+  const aiProviderName = AI_PROVIDERS.find(p => p.id === aiConfig.provider)?.name || aiConfig.provider;
+
+  /** 为目标概念构建欢迎消息（苏格拉底开场 / 已掌握欢迎 / 复习开场） */
+  const buildWelcomeFor = (r: RouteResult, target: Concept, st: UserProgress | undefined, eng: SocraticEngine): Message[] => {
+    if (r.intent === 'review') {
+      return [{ id: 'welcome', role: 'assistant', timestamp: new Date(),
+        content: `开始复习——『${target.name}』。别看笔记，凭记忆回答。\n\n${eng.getNextQuestionText() || eng.getStageIntro()}`,
+        card: { type: 'review', conceptId: target.id } }];
+    }
+    if (r.intent === 'learn') {
+      if (st?.status === 'mastered') {
+        return [{ id: 'welcome', role: 'assistant', timestamp: new Date(),
+          content: `欢迎回到『${target.name}』！你已经掌握了这个概念 ✨\n\n${target.quotes[0]}`,
+          isEncouragement: true, card: { type: 'concept', conceptId: target.id } }];
+      }
+      const intro = eng.getStageIntro();
+      const firstQ = eng.getNextQuestionText();
+      return [{ id: 'welcome', role: 'assistant', timestamp: new Date(),
+        content: intro ? `${intro}\n\n${firstQ}` : (firstQ || `欢迎来到『${target.name}』！`),
+        card: { type: 'concept', conceptId: target.id } }];
+    }
+    return [];
+  };
+
+  /** 由 Agent 首页/卡片动作打开一段对话（学习/复习/带上下文的自由探讨） */
+  const openAgentConversation = (r: RouteResult, userText: string) => {
+    const target = r.concept ?? selectedConcept;
+    const targetChapter = r.chapter ?? selectedChapter;
+    if (!target || !targetChapter) return;
+    const cid = target.id;
+    const switching = selectedConcept?.id !== cid;
+    const st = progress[cid];
+    const eng = new SocraticEngine(target.questions, target.unlockingCriteria.minCorrectAnswers, target, st?.cognitiveStage || 'understand', st?.socraticEngineState);
+
+    // 同概念且有历史对话时保留历史，避免卡片重复点击清空记录
+    let base: Message[] = [];
+    if (!switching) {
+      const existing = socraticMapRef.current[cid];
+      if (existing?.length && r.intent !== 'review') base = existing;
+      else base = buildWelcomeFor(r, target, st, eng);
+    } else {
+      base = buildWelcomeFor(r, target, st, eng);
+    }
+
+    reviewSessionRef.current = r.intent === 'review' ? cid : null;
+
+    if (switching) {
+      suppressConceptReloadRef.current = true;
+      setSelectedChapter(targetChapter);
+      setSelectedConcept(target);
+      setEngine(eng);
+      setCollisionEngine(new CollisionEngine(target));
+      setLearningMode('socratic');
+      if (base.length) setSocraticMessagesMap(p => ({ ...p, [cid]: base }));
+    } else if (base.length) {
+      setSocraticMessagesMap(p => ({ ...p, [cid]: base }));
+    }
+
+    setMessages(base);
+    setStreamingText(''); setIsTyping(false); setShowThinking(false);
+    setView('chat');
+
+    if (canUseAI && userText.trim()) {
+      void sendAIMessage(userText, 'socratic', { concept: target, chapter: targetChapter, baseMessages: base });
+    }
+  };
+
+  /** 首页输入统一入口：路由 → 打开对话 或 本地静态回复（留在首页） */
+  const handleHomeSend = (text: string) => {
+    const r = routeAgentInput(text, book, progress);
+
+    // 可直接进入的意图：学习(可进入)、复习、或 AI 模式（自由提问/闲聊交给 AI）
+    if ((r.intent === 'learn' && r.conceptSelectable) || r.intent === 'review' || canUseAI) {
+      setHomeMessages([]); // 进入正式对话后清空首页临时往返
+      openAgentConversation(r, text);
+      return;
+    }
+
+    // 本地模式的静态回复：留在首页继续
+    const reply = r.reply || (r.intent === 'chat' ? LOCAL_CHAT_REPLY : LOCAL_FREE_REPLY);
+    setHomeMessages(p => [...p,
+      { id: `u${Date.now()}`, role: 'user', content: text },
+      { id: `a${Date.now() + 1}`, role: 'assistant', content: reply, card: r.card },
+    ]);
+  };
+
+  /** 学习地图按钮：直接进入聊天视图（保留当前对话或生成开场） */
+  const openChatMap = () => {
+    const cid = selectedConcept?.id;
+    if (!cid) { setView('chat'); return; }
+    const existing = socraticMapRef.current[cid];
+    if (!messages.length && !existing?.length && selectedConcept && engine) {
+      const firstQ = engine.getNextQuestionText();
+      const stageIntro = engine.getStageIntro();
+      const welcome: Message = { id: 'welcome', role: 'assistant', timestamp: new Date(),
+        content: stageIntro ? `${stageIntro}\n\n${firstQ}` : (firstQ || `欢迎来到「${selectedConcept.name}」！`) };
+      setMessages([welcome]);
+      setSocraticMessagesMap(p => ({ ...p, [cid]: [welcome] }));
+    } else if (existing?.length && !messages.length) {
+      setMessages(existing);
+    }
+    setView('chat');
+  };
+
+  /** 消息流中的学习卡片 */
+  const renderChatCard = (card: MessageCard) => {
+    const loc = book.chapters.flatMap(ch => ch.concepts.map(c => ({ c, ch }))).find(x => x.c.id === card.conceptId);
+    if (!loc) return null;
+    const st = progress[loc.c.id]?.status || (loc.c.unlockingCriteria.requiredConcepts.length === 0 ? 'in_progress' : 'locked');
+    const selectable = st !== 'locked' && loc.c.unlockingCriteria.requiredConcepts.every(id => progress[id]?.status === 'mastered');
+    const dueInfo = card.type === 'review' ? getConceptsNeedingReview().find(d => d.conceptId === card.conceptId) : undefined;
+    return (
+      <LearnCard
+        concept={loc.c}
+        chapter={loc.ch}
+        status={st}
+        cognitiveStage={progress[loc.c.id]?.cognitiveStage}
+        daysOverdue={card.type === 'review' ? (dueInfo?.daysOverdue ?? 0) : undefined}
+        isDark={isDark}
+        actionLabel={card.type === 'review' ? '开始复习' : (st === 'mastered' ? '深入探讨' : '继续学习')}
+        onAction={() => handleHomeSend(`${card.type === 'review' ? '复习' : '学习'}『${loc.c.name}』`)}
+        disabled={!selectable}
+      />
+    );
+  };
+
+
   const stats = useMemo(() => ({ mastered: Object.values(progress).filter(p => p.status === 'mastered').length, total: book.chapters.flatMap(c => c.concepts).length }), [progress]);
   const currentChapterColor = chapterColors[selectedChapter?.id || ''] || chapterColors['dual-system'];
-  const heatmapData = useMemo(() => generateHeatmapData(), []);
+  const heatmapData = useMemo(() => getActivityData(), [progress]);
   const totalInteractions = useMemo(() => heatmapData.reduce((a, b) => a + b, 0), [heatmapData]);
 
   const formatDate = (ds: string) => {
@@ -505,18 +686,22 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
       <header className={`glass border-b relative z-50 flex-shrink-0 ${isDark ? 'border-dark-border' : 'border-slate-200/60'}`}>
         <div className="h-14 flex items-center justify-between px-4">
           <div className="flex items-center gap-3">
-            <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className={`p-2 rounded-xl transition-colors ${isDark ? 'hover:bg-dark-hover text-dark-text-secondary' : 'hover:bg-slate-100 text-slate-500'}`}>
-              {sidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
-            </button>
+            {view === 'chat' && (
+              <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className={`p-2 rounded-xl transition-colors ${isDark ? 'hover:bg-dark-hover text-dark-text-secondary' : 'hover:bg-slate-100 text-slate-500'}`}>
+                {sidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
+              </button>
+            )}
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20">
+              <button onClick={() => setView('home')} title="回到 Agent 首页"
+                className="w-8 h-8 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20 hover:scale-105 active:scale-95 transition-transform">
                 <Brain className="w-4 h-4 text-white" />
-              </div>
+              </button>
               <div className="hidden sm:block"><h1 className="text-base font-bold tracking-tight gradient-text leading-tight">CogniRead</h1><p className={`text-[10px] font-medium ${isDark ? 'text-dark-text-muted' : 'text-slate-400'}`}>AI 阅读辅助</p></div>
             </div>
           </div>
 
           {/* Center mode tabs */}
+          {view === 'chat' && (
           <div className="hidden md:flex items-center gap-1 bg-slate-100/80 dark:bg-dark-card rounded-xl p-1">
             {selectedConcept && (<>
               <button onClick={() => switchMode('socratic')} className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${learningMode === 'socratic' ? 'bg-white dark:bg-dark-hover text-indigo-600 dark:text-indigo-400 shadow-sm' : isDark ? 'text-dark-text-secondary hover:text-dark-text' : 'text-slate-500 hover:text-slate-700'}`}>
@@ -527,12 +712,15 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
               </button>
             </>)}
           </div>
+          )}
 
           {/* Right controls */}
           <div className="flex items-center gap-2">
-            <div className={`hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${isDark ? 'bg-dark-card text-dark-text-secondary' : 'bg-slate-100 text-slate-500'}`}>
-              <Dumbbell className="w-3 h-3" /><span>{difficultyLabels[difficulty].label}</span>
-            </div>
+            {view === 'chat' && (
+              <div className={`hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${isDark ? 'bg-dark-card text-dark-text-secondary' : 'bg-slate-100 text-slate-500'}`}>
+                <Dumbbell className="w-3 h-3" /><span>{difficultyLabels[difficulty].label}</span>
+              </div>
+            )}
             <div className={`hidden sm:flex items-center gap-3 px-3 py-1.5 rounded-xl text-xs font-medium ${isDark ? 'bg-dark-card text-dark-text-secondary' : 'bg-slate-100/80 text-slate-500'}`}>
               <div className="flex items-center gap-1"><Trophy className="w-3.5 h-3.5 text-emerald-500" /><span>{stats.mastered}/{stats.total}</span></div>
               <div className="w-px h-3.5 bg-slate-200 dark:bg-dark-border" />
@@ -542,9 +730,11 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
             <button onClick={() => setIsDark(!isDark)} className={`p-2 rounded-xl transition-colors ${isDark ? 'hover:bg-dark-hover text-dark-text-secondary' : 'hover:bg-slate-100 text-slate-500'}`}>
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
-            <button onClick={() => setRightPanelCollapsed(!rightPanelCollapsed)} className={`p-2 rounded-xl transition-colors ${isDark ? 'hover:bg-dark-hover text-dark-text-secondary' : 'hover:bg-slate-100 text-slate-500'}`}>
-              <BarChart3 className="w-4 h-4" />
-            </button>
+            {view === 'chat' && (
+              <button onClick={() => setRightPanelCollapsed(!rightPanelCollapsed)} className={`p-2 rounded-xl transition-colors ${isDark ? 'hover:bg-dark-hover text-dark-text-secondary' : 'hover:bg-slate-100 text-slate-500'}`}>
+                <BarChart3 className="w-4 h-4" />
+              </button>
+            )}
             {/* AI 设置按钮 */}
             <button onClick={() => setSettingsOpen(true)} className={`p-2 rounded-xl transition-colors ${aiEnabled ? 'text-indigo-500' : (isDark ? 'hover:bg-dark-hover text-dark-text-secondary' : 'hover:bg-slate-100 text-slate-400')}`} title="AI 设置">
               {aiEnabled ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
@@ -553,7 +743,8 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
         </div>
       </header>
 
-      {/* MAIN LAYOUT */}
+      {/* MAIN LAYOUT / AGENT HOME */}
+      {view === 'chat' ? (
       <div className="flex flex-1 min-h-0 relative z-10">
         {/* LEFT SIDEBAR */}
         <aside className={`sidebar-transition flex-shrink-0 border-r overflow-y-auto overflow-x-hidden ${sidebarCollapsed ? 'w-0 min-w-0 border-r-0 opacity-0' : 'w-[280px] min-w-[280px] opacity-100'} ${isDark ? 'border-dark-border bg-dark-bg/80' : 'bg-white/50'}`}>
@@ -694,6 +885,7 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
                   <CognitiveVisualization
                     isDark={isDark}
                     compact
+                    isStreaming={!!streamingText}
                     currentMessage={streamingText || messages[messages.length - 1]?.content || ''}
                     messagesCount={messages.length}
                   />
@@ -711,6 +903,7 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
                         {msg.isMasteryMessage && getNextConcept() && (
                           <button onClick={goToNextConcept} className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 text-white text-sm font-medium rounded-xl hover:shadow-lg hover:shadow-purple-500/25 active:scale-[0.98] transition-all"><ArrowRight className="w-4 h-4" />进入下一个概念：{getNextConcept()?.concept.name}</button>
                         )}
+                        {msg.card && renderChatCard(msg.card)}
                       </div>
                     </div>
                   </div>
@@ -781,11 +974,14 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
                 <h3 className={`text-xl font-bold mb-2 ${isDark ? 'text-dark-text' : 'text-slate-800'}`}>选择一个概念开始学习</h3>
                 <p className={`text-sm mb-8 ${isDark ? 'text-dark-text-secondary' : 'text-slate-400'}`}>从左侧选择章节和概念，开启学习之旅</p>
                 <div className="grid grid-cols-2 gap-4">
-                  {[{ icon: <MessageCircle className="w-5 h-5 text-white" />, title: '苏格拉底式追问', desc: '通过提问检验认知', gradient: 'from-indigo-500 to-purple-600', cls: 'indigo' }, { icon: <Zap className="w-5 h-5 text-white" />, title: '思维的碰撞', desc: '自由讨论深入探讨', gradient: 'from-purple-500 to-pink-600', cls: 'purple' }].map(item => (
-                    <div key={item.cls} className={`p-5 rounded-2xl border hover-lift ${isDark ? `bg-${item.cls}-950/20 border-${item.cls}-900/30` : `bg-gradient-to-br from-${item.cls}-50 to-${item.cls === 'indigo' ? 'blue' : 'pink'}-50 border-${item.cls}-100/60`}`}>
+                  {[
+                    { icon: <MessageCircle className="w-5 h-5 text-white" />, title: '苏格拉底式追问', desc: '通过提问检验认知', gradient: 'from-indigo-500 to-purple-600', container: 'bg-gradient-to-br from-indigo-50 to-blue-50 border-indigo-100/60', containerDark: 'bg-indigo-950/20 border-indigo-900/30', titleCls: 'text-indigo-700', titleClsDark: 'text-indigo-300', descCls: 'text-indigo-500/70', descClsDark: 'text-indigo-400/60' },
+                    { icon: <Zap className="w-5 h-5 text-white" />, title: '思维的碰撞', desc: '自由讨论深入探讨', gradient: 'from-purple-500 to-pink-600', container: 'bg-gradient-to-br from-purple-50 to-pink-50 border-purple-100/60', containerDark: 'bg-purple-950/20 border-purple-900/30', titleCls: 'text-purple-700', titleClsDark: 'text-purple-300', descCls: 'text-purple-500/70', descClsDark: 'text-purple-400/60' },
+                  ].map((item, i) => (
+                    <div key={i} className={`p-5 rounded-2xl border hover-lift ${isDark ? item.containerDark : item.container}`}>
                       <div className={`w-10 h-10 bg-gradient-to-br ${item.gradient} rounded-xl flex items-center justify-center mx-auto mb-3 shadow-sm`}>{item.icon}</div>
-                      <p className={`font-semibold text-sm ${isDark ? `text-${item.cls}-300` : `text-${item.cls}-700`}`}>{item.title}</p>
-                      <p className={`text-xs mt-1 ${isDark ? `text-${item.cls}-400/60` : `text-${item.cls}-500/70`}`}>{item.desc}</p>
+                      <p className={`font-semibold text-sm ${isDark ? item.titleClsDark : item.titleCls}`}>{item.title}</p>
+                      <p className={`text-xs mt-1 ${isDark ? item.descClsDark : item.descCls}`}>{item.desc}</p>
                     </div>
                   ))}
                 </div>
@@ -814,6 +1010,7 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
                 </h3>
                 <CognitiveVisualization
                   isDark={isDark}
+                  isStreaming={!!streamingText}
                   currentMessage={streamingText || messages[messages.length - 1]?.content || ''}
                   messagesCount={messages.length}
                 />
@@ -942,6 +1139,23 @@ ${progress[selectedConcept.id]?.status === 'mastered' ? '注意：用户已经�
           </div>
         </aside>
       </div>
+      ) : (
+      <HomeView
+        isDark={isDark}
+        greeting={homeOpening.greeting}
+        suggestions={homeOpening.suggestions}
+        openingCards={homeOpening.cards}
+        homeMessages={homeMessages}
+        book={book}
+        progress={progress}
+        aiEnabled={aiEnabled}
+        aiProviderName={aiProviderName}
+        stats={{ mastered: stats.mastered, total: stats.total }}
+        onSend={handleHomeSend}
+        onOpenMap={openChatMap}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+      )}
 
       {/* UNLOCK ANIMATION */}
       {showUnlockAnimation && (

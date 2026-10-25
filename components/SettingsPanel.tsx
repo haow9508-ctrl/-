@@ -68,10 +68,15 @@ export default function SettingsPanel({ isOpen, onClose, onConfigChange, isDark 
   const updateConfig = useCallback((updates: Partial<AIConfig>) => {
     setConfig(prev => {
       const next = { ...prev, ...updates };
-      // 自动填充 baseUrl
+      // 切换提供商时自动填充 baseUrl，并把模型重置为该提供商的默认模型
       if (updates.provider && updates.provider !== 'custom') {
         const provider = AI_PROVIDERS.find(p => p.id === updates.provider);
-        if (provider) next.baseUrl = provider.baseUrl;
+        if (provider) {
+          next.baseUrl = provider.baseUrl;
+          if (provider.models.length > 0 && !provider.models.some(m => m.id === next.model)) {
+            next.model = provider.models[0].id;
+          }
+        }
       }
       return next;
     });

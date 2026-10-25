@@ -56,6 +56,12 @@ export interface Book {
   chapters: Chapter[];
 }
 
+// 消息内嵌的学习卡片（Agent 卡片流）
+export interface MessageCard {
+  type: 'concept' | 'review';
+  conceptId: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -65,6 +71,16 @@ export interface Message {
   isEncouragement?: boolean;
   isGuidance?: boolean;
   isMasteryMessage?: boolean; // 掌握完成的消息，需要显示"下一步"按钮
+  card?: MessageCard;         // 消息下方渲染的学习卡片
+}
+
+// 苏格拉底引擎进度快照（跨会话恢复对话进度用）
+export interface SocraticEngineState {
+  questionIndex: number;
+  correctAnswers: number;
+  stage: CognitiveStage;
+  stageInteractionCount: number;
+  stageCorrectCount: number;
 }
 
 export interface UserProgress {
@@ -82,6 +98,8 @@ export interface UserProgress {
   correctAnswers: number;
   totalQuestions: number;
   conversationHistory: Message[];
+  // 苏格拉底引擎快照
+  socraticEngineState?: SocraticEngineState;
 }
 
 // 四阶段认知流程（基于布鲁姆分类法 + 库伯经验学习圈）

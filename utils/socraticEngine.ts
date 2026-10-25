@@ -1,4 +1,4 @@
-import { Message, SocraticQuestion, Concept, CognitiveStage, STAGE_ORDER } from '@/types/book';
+import { Message, SocraticQuestion, Concept, CognitiveStage, STAGE_ORDER, SocraticEngineState } from '@/types/book';
 
 // 回答评估结果
 interface AnswerEvaluation {
@@ -68,13 +68,32 @@ export class SocraticEngine {
   private stageCorrectCount: number = 0;
   private readonly STAGE_ADVANCE_THRESHOLD = 2; // 每阶段需要答对2次才能推进
 
-  constructor(questions: SocraticQuestion[], minCorrectAnswers: number = 2, concept?: Concept, initialStage: CognitiveStage = 'understand') {
+  constructor(questions: SocraticQuestion[], minCorrectAnswers: number = 2, concept?: Concept, initialStage: CognitiveStage = 'understand', snapshot?: SocraticEngineState) {
     this.questions = questions;
     this.minCorrectAnswers = minCorrectAnswers;
     this.concept = concept || null;
     this.questionIndex = 0;
     this.currentQuestion = questions[0] || null;
     this.currentStage = initialStage;
+    if (snapshot) {
+      this.questionIndex = Math.min(Math.max(0, snapshot.questionIndex), questions.length);
+      this.currentQuestion = this.questions[this.questionIndex] || null;
+      this.correctAnswers = snapshot.correctAnswers;
+      this.currentStage = snapshot.stage || initialStage;
+      this.stageInteractionCount = snapshot.stageInteractionCount;
+      this.stageCorrectCount = snapshot.stageCorrectCount;
+    }
+  }
+
+  // 导出引擎内部进度快照（用于持久化，配合构造函数的 snapshot 参数恢复）
+  getSnapshot(): SocraticEngineState {
+    return {
+      questionIndex: this.questionIndex,
+      correctAnswers: this.correctAnswers,
+      stage: this.currentStage,
+      stageInteractionCount: this.stageInteractionCount,
+      stageCorrectCount: this.stageCorrectCount,
+    };
   }
 
   // 获取当前认知阶段
@@ -340,7 +359,6 @@ export class SocraticEngine {
       // 移动到下一个问题
       if (this.questionIndex < this.questions.length) {
         this.currentQuestion = this.questions[this.questionIndex];
-        const nextQ = matchedGuidance.followUpQuestion || this.currentQuestion.question;
         return {
           isCorrect: true,
           feedback: matchedGuidance.response,

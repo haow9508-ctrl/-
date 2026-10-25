@@ -9,6 +9,16 @@ export interface StoredProgress {
   concepts: Record<string, UserProgress>;
   lastVisit: string;
   totalSessions: number;
+  // 每日活跃度（日期 -> 当日互动次数），用于学习热力图
+  activity: Record<string, number>;
+}
+
+// 本地日期键（YYYY-MM-DD），统一用本地时区
+function dateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 // 创建默认的 UserProgress（兼容旧数据）
@@ -32,8 +42,14 @@ function createDefaultProgress(conceptId: string, status: UserProgress['status']
   };
 }
 
+// 无 localStorage 环境（SSR / 单测）的兜底
+function emptyProgress(): StoredProgress {
+  return { concepts: {}, lastVisit: new Date().toISOString(), totalSessions: 0, activity: {} };
+}
+
 // 获取存储的数据
 export function getStoredProgress(): StoredProgress {
+  if (typeof localStorage === 'undefined') return emptyProgress();
   // 检查数据版本，不匹配时自动重置
   const storedVersion = localStorage.getItem(DATA_VERSION_KEY);
   if (storedVersion && parseInt(storedVersion) !== CURRENT_DATA_VERSION) {
@@ -42,7 +58,7 @@ export function getStoredProgress(): StoredProgress {
     localStorage.removeItem('cogniread_collision_messages');
     localStorage.removeItem('cogniread_memory');
     localStorage.setItem(DATA_VERSION_KEY, String(CURRENT_DATA_VERSION));
-    return { concepts: {}, lastVisit: new Date().toISOString(), totalSessions: 0 };
+    return { concepts: {}, lastVisit: new Date().toISOString(), totalSessions: 0, activity: {} };
   }
   // 首次使用时标记版本
   if (!storedVersion) {
@@ -70,7 +86,8 @@ export function getStoredProgress(): StoredProgress {
       return {
         concepts,
         lastVisit: parsed.lastVisit || new Date().toISOString(),
-        totalSessions: parsed.totalSessions || 0
+        totalSessions: parsed.totalSessions || 0,
+        activity: parsed.activity || {},
       };
     }
   } catch (e) {
@@ -79,12 +96,14 @@ export function getStoredProgress(): StoredProgress {
   return {
     concepts: {},
     lastVisit: new Date().toISOString(),
-    totalSessions: 0
+    totalSessions: 0,
+    activity: {},
   };
 }
 
-// 保存用户进度
+// 保存用户进度（不改变 totalSessions，会话数由 recordSession 单独记录）
 export function saveProgress(concepts: Record<string, UserProgress>): void {
+  if (typeof localStorage === 'undefined') return;
   try {
     const current = getStoredProgress();
     const data: StoredProgress = {
@@ -93,7 +112,8 @@ export function saveProgress(concepts: Record<string, UserProgress>): void {
         ...concepts
       },
       lastVisit: new Date().toISOString(),
-      totalSessions: current.totalSessions + 1
+      totalSessions: current.totalSessions,
+      activity: current.activity,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
@@ -101,8 +121,47 @@ export function saveProgress(concepts: Record<string, UserProgress>): void {
   }
 }
 
+// 记录一次学习会话（每次打开应用调用一次）
+export function recordSession(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const current = getStoredProgress();
+    const data: StoredProgress = { ...current, totalSessions: current.totalSessions + 1, lastVisit: new Date().toISOString() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error('Failed to record session:', e);
+  }
+}
+
+// 记录一次学习互动（回答问题/发送消息）
+export function recordActivity(count: number = 1): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const current = getStoredProgress();
+    const key = dateKey(new Date());
+    current.activity[key] = (current.activity[key] || 0) + count;
+    const data: StoredProgress = { ...current, lastVisit: new Date().toISOString() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error('Failed to record activity:', e);
+  }
+}
+
+// 获取最近 84 天的活跃度数据（与热力图 12x7 网格对应，末位是今天）
+export function getActivityData(): number[] {
+  const stored = getStoredProgress();
+  const out: number[] = [];
+  for (let i = 83; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    out.push(stored.activity[dateKey(d)] || 0);
+  }
+  return out;
+}
+
 // 更新单个概念的进度
 export function updateConceptProgress(conceptId: string, progress: UserProgress): void {
+  if (typeof localStorage === 'undefined') return;
   const current = getStoredProgress();
   current.concepts[conceptId] = progress;
   current.lastVisit = new Date().toISOString();
@@ -121,6 +180,7 @@ export function getConceptProgress(conceptId: string): UserProgress | null {
 
 // 清除所有进度
 export function clearProgress(): void {
+  if (typeof localStorage === 'undefined') return;
   try {
     localStorage.removeItem(STORAGE_KEY);
   } catch (e) {

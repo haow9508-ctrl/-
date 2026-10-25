@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* 应用通过 documentElement.classList.toggle('dark') 切换主题，
+   Tailwind v4 默认 dark: 只响应系统偏好，必须显式声明 class 策略 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-brand-50: #eef2ff;
   --color-brand-100: #e0e7ff;

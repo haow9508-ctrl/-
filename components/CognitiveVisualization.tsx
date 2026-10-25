@@ -24,9 +24,14 @@ export interface CognitiveFramework {
   name: string;
   shortName: string;
   icon: React.ReactNode;
-  color: string;
-  bgColor: string;
-  borderColor: string;
+  color: string;          // Tailwind 文本色（text-blue-500）
+  hex: string;            // SVG 用的真实色值（雷达图数据点/描边）
+  bgColor: string;        // Tailwind 背景色（bg-blue-500）
+  borderColor: string;    // Tailwind 边框色（border-blue-500）
+  borderSoft: string;     // 半透明边框（激活态卡片描边）
+  barGradient: string;    // 激活条渐变
+  activeLight: string;    // 激活态浅色背景渐变（必须写完整字面量，Tailwind 才能扫描到）
+  activeDark: string;     // 激活态深色背景渐变
   description: string;
   /** 0-100 的激活值 */
   activation: number;
@@ -70,9 +75,14 @@ const DEFAULT_FRAMEWORKS: CognitiveFramework[] = [
     shortName: '拆解',
     icon: <Target className="w-4 h-4" />,
     color: 'text-blue-500',
+    hex: '#3b82f6',
     bgColor: 'bg-blue-500',
     borderColor: 'border-blue-500',
-    description: 'What → How → Why，层层追问问题本质',
+    borderSoft: 'border-blue-500/30',
+    barGradient: 'from-blue-500 to-blue-400',
+    activeLight: 'from-blue-50/30 to-transparent',
+    activeDark: 'from-blue-950/40 to-transparent',
+description: 'What → How → Why，层层追问问题本质',
     activation: 0,
     usageCount: 0,
   },
@@ -82,9 +92,14 @@ const DEFAULT_FRAMEWORKS: CognitiveFramework[] = [
     shortName: '觉察',
     icon: <Brain className="w-4 h-4" />,
     color: 'text-purple-500',
+    hex: '#a855f7',
     bgColor: 'bg-purple-500',
     borderColor: 'border-purple-500',
-    description: '识别直觉陷阱，切换到理性分析模式',
+    borderSoft: 'border-purple-500/30',
+    barGradient: 'from-purple-500 to-purple-400',
+    activeLight: 'from-purple-50/30 to-transparent',
+    activeDark: 'from-purple-950/40 to-transparent',
+description: '识别直觉陷阱，切换到理性分析模式',
     activation: 0,
     usageCount: 0,
   },
@@ -94,9 +109,14 @@ const DEFAULT_FRAMEWORKS: CognitiveFramework[] = [
     shortName: '推理',
     icon: <GitBranch className="w-4 h-4" />,
     color: 'text-emerald-500',
+    hex: '#10b981',
     bgColor: 'bg-emerald-500',
     borderColor: 'border-emerald-500',
-    description: '现象→原因→前提→推导→结论，步步验证',
+    borderSoft: 'border-emerald-500/30',
+    barGradient: 'from-emerald-500 to-emerald-400',
+    activeLight: 'from-emerald-50/30 to-transparent',
+    activeDark: 'from-emerald-950/40 to-transparent',
+description: '现象→原因→前提→推导→结论，步步验证',
     activation: 0,
     usageCount: 0,
   },
@@ -106,9 +126,14 @@ const DEFAULT_FRAMEWORKS: CognitiveFramework[] = [
     shortName: '镜子',
     icon: <Eye className="w-4 h-4" />,
     color: 'text-amber-500',
+    hex: '#f59e0b',
     bgColor: 'bg-amber-500',
     borderColor: 'border-amber-500',
-    description: '照出思维盲区，不替代思考',
+    borderSoft: 'border-amber-500/30',
+    barGradient: 'from-amber-500 to-amber-400',
+    activeLight: 'from-amber-50/30 to-transparent',
+    activeDark: 'from-amber-950/40 to-transparent',
+description: '照出思维盲区，不替代思考',
     activation: 0,
     usageCount: 0,
   },
@@ -118,9 +143,14 @@ const DEFAULT_FRAMEWORKS: CognitiveFramework[] = [
     shortName: '归类',
     icon: <Zap className="w-4 h-4" />,
     color: 'text-rose-500',
+    hex: '#f43f5e',
     bgColor: 'bg-rose-500',
     borderColor: 'border-rose-500',
-    description: '找共性模式，从零开始→调用方法论',
+    borderSoft: 'border-rose-500/30',
+    barGradient: 'from-rose-500 to-rose-400',
+    activeLight: 'from-rose-50/30 to-transparent',
+    activeDark: 'from-rose-950/40 to-transparent',
+description: '找共性模式，从零开始→调用方法论',
     activation: 0,
     usageCount: 0,
   },
@@ -130,9 +160,14 @@ const DEFAULT_FRAMEWORKS: CognitiveFramework[] = [
     shortName: '费曼',
     icon: <Lightbulb className="w-4 h-4" />,
     color: 'text-indigo-500',
+    hex: '#6366f1',
     bgColor: 'bg-indigo-500',
     borderColor: 'border-indigo-500',
-    description: '举例→解释→判断→顿悟，四层检验',
+    borderSoft: 'border-indigo-500/30',
+    barGradient: 'from-indigo-500 to-indigo-400',
+    activeLight: 'from-indigo-50/30 to-transparent',
+    activeDark: 'from-indigo-950/40 to-transparent',
+description: '举例→解释→判断→顿悟，四层检验',
     activation: 0,
     usageCount: 0,
   },
@@ -142,9 +177,14 @@ const DEFAULT_FRAMEWORKS: CognitiveFramework[] = [
     shortName: '突破',
     icon: <Shield className="w-4 h-4" />,
     color: 'text-cyan-500',
+    hex: '#06b6d4',
     bgColor: 'bg-cyan-500',
     borderColor: 'border-cyan-500',
-    description: '区分能力不可能和选择不做',
+    borderSoft: 'border-cyan-500/30',
+    barGradient: 'from-cyan-500 to-cyan-400',
+    activeLight: 'from-cyan-50/30 to-transparent',
+    activeDark: 'from-cyan-950/40 to-transparent',
+description: '区分能力不可能和选择不做',
     activation: 0,
     usageCount: 0,
   },
@@ -306,13 +346,13 @@ function FrameworkCard({
   isCompact?: boolean;
 }) {
   const isActive = framework.activation > 0;
-  
+
   return (
     <div
       className={`
         group relative overflow-hidden rounded-xl border transition-all duration-300 cursor-default
         ${isActive
-          ? `${framework.borderColor}/30 bg-gradient-to-br ${isDark ? 'from-' + framework.bgColor.split('-')[1] + '-950/40 to-transparent' : 'from-' + framework.bgColor.split('-')[1] + '-50/30 to-transparent'}`
+          ? `${framework.borderSoft} bg-gradient-to-br ${isDark ? framework.activeDark : framework.activeLight}`
           : isDark ? 'border-dark-border bg-dark-card/50' : 'border-slate-200/60 bg-slate-50/50'
         }
         hover:shadow-md ${isCompact ? 'p-2' : 'p-3'}
@@ -320,13 +360,13 @@ function FrameworkCard({
     >
       {/* 激活指示条 */}
       <div className={`absolute top-0 left-0 right-0 h-0.5 transition-all duration-500 ${
-        isActive ? `bg-gradient-to-r ${framework.borderColor.replace('border-', 'from-')}` : ''
+        isActive ? `bg-gradient-to-r ${framework.barGradient}` : ''
       }`} style={{ width: `${framework.activation}%` }} />
 
-      <div className={`flex items-center gap-${isCompact ? '2' : '2.5'}`}>
+      <div className={`flex items-center ${isCompact ? 'gap-2' : 'gap-2.5'}`}>
         {/* 图标 */}
         <div className={`
-          w-${isCompact ? '7' : '8'} h-${isCompact ? '7' : '8'} rounded-lg flex items-center justify-center flex-shrink-0
+          ${isCompact ? 'w-7 h-7' : 'w-8 h-8'} rounded-lg flex items-center justify-center flex-shrink-0
           transition-all duration-300
           ${isActive
             ? `${framework.bgColor} text-white shadow-sm`
@@ -340,7 +380,7 @@ function FrameworkCard({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
               <span className={`text-xs font-semibold truncate ${
-                isActive ? framework.color : (isDark ? 'dark-text-secondary' : 'text-slate-600')
+                isActive ? framework.color : (isDark ? 'text-dark-text-secondary' : 'text-slate-600')
               }`}>{framework.name}</span>
               {framework.usageCount > 0 && (
                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
@@ -367,7 +407,7 @@ function FrameworkCard({
           isDark ? 'bg-dark-border' : 'bg-slate-200/60'
         }`}>
           <div
-            className={`h-full rounded-full transition-all duration-700 ease-out bg-gradient-to-r ${framework.borderColor.replace('border-', 'from-')}`}
+            className={`h-full rounded-full transition-all duration-700 ease-out bg-gradient-to-r ${framework.barGradient}`}
             style={{ width: `${framework.activation}%` }}
           />
         </div>
@@ -465,6 +505,7 @@ function CausalChainView({ nodes, isDark }: { nodes: CausalNode[]; isDark: boole
 interface CognitiveVisualizationProps {
   isDark: boolean;
   compact?: boolean;         // 迷你模式（嵌入聊天区域）
+  isStreaming?: boolean;     // AI 正在流式输出（此时不逐字检测框架，避免误触发）
   currentMessage?: string;   // 当前 AI 回复文本（用于自动解析框架）
   messagesCount?: number;    // 对话轮次
 }
@@ -472,6 +513,7 @@ interface CognitiveVisualizationProps {
 export default function CognitiveVisualization({
   isDark,
   compact = false,
+  isStreaming = false,
   currentMessage = '',
   messagesCount = 0,
 }: CognitiveVisualizationProps) {
@@ -482,7 +524,10 @@ export default function CognitiveVisualization({
   const [totalBreakthroughs, setTotalBreakthroughs] = useState(0);
 
   // 从 AI 回复中自动检测框架使用情况
+  // 流式输出期间不检测（逐字检测会把一次回复放大成几十次激活），
+  // 等 isStreaming 变为 false / 消息数变化时对完整消息做一次判定
   useEffect(() => {
+    if (isStreaming) return;
     if (!currentMessage.trim()) return;
 
     const msgLower = currentMessage.toLowerCase();
@@ -540,7 +585,7 @@ export default function CognitiveVisualization({
     if (breakthrough) {
       setTotalBreakthroughs(prev => prev + 1);
     }
-  }, [currentMessage]);
+  }, [currentMessage, isStreaming, messagesCount]);
 
   // 初始化默认因果链结构
   useEffect(() => {
@@ -553,13 +598,13 @@ export default function CognitiveVisualization({
     ]);
   }, []);
 
-  // 计算雷达图维度
+  // 计算雷达图维度（color 必须是真实色值，SVG 的 fill/stroke 不认 Tailwind 类名）
   const radarDimensions: RadarDimension[] = useMemo(
     () => frameworks.map(fw => ({
       label: fw.shortName,
       value: fw.activation,
       target: Math.min(80, 40 + fw.usageCount * 10),
-      color: fw.color.replace('text-', ''),
+      color: fw.hex,
     })),
     [frameworks]
   );
@@ -677,7 +722,7 @@ export default function CognitiveVisualization({
               {frameworks.map(fw => (
                 <div key={fw.id} className={`flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium ${
                   fw.activation > 30
-                    ? (isDark ? `border ${fw.borderColor}/30 ${fw.color}` : `border ${fw.borderColor}/30 ${fw.color}`)
+                    ? `border ${fw.borderSoft} ${fw.color}`
                     : (isDark ? 'text-dark-text-muted' : 'text-slate-400')
                 }`}>
                   <div className={`w-2 h-2 rounded-full ${fw.activation > 30 ? fw.bgColor : (isDark ? 'bg-dark-border' : 'bg-slate-200')}`} />
